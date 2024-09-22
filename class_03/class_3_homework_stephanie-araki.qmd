@@ -1,0 +1,256 @@
+---
+title: "Class 3 Homework - Stephanie Araki"
+format: 
+  html:
+    embed-resources: true
+---
+
+# Instructions 
+
+This assignment asks you to revisit what you learned in the first lecture and compare it against the synthentic data set we will be using. The example file we used in class is here:  Class 3 Homework TemplateLinks to an external site. - you can use this as the basis for your own report. You will want to refer to Access the Synthea Data Set for more information on the data set, including the data model.
+
+Upload your answers to Canvas as a working Quarto markdown file and report (ie, both the .qmd file and a .pdf/.html). Your file should be in a formal report format, including RMarkdown headers with your name and the date, and then headers and explanatory text surrounding your code. Your code must run - ie, I should be able to load the the .qmd file and generate the same HTML file.
+
+The first question part refers to the real world, the second portion to Synthea. You should be able to answer these the first portion of the question with online sources - eg Wikipedia. In general start with the "encounters" table to answer these questions, and use the documentation linked above.
+
+
+```{r}
+#| warning: false
+library(tidyverse)     # loads the tidyverse tools
+library(RPostgres)     # loads the database driver for PostgreSQL
+library(connections)   # helps RPostgres work with RStudio
+library(keyring)       # access to a local encrypted keychain for passwords
+
+con <- connection_open(RPostgres::Postgres(),
+          dbname = "syntheticmguh",
+          host = "34.145.215.95",
+          user = "hids502_student",
+          password = key_get(service = "syntheticmguh", 
+                             username = "hids502_student"))
+```
+
+# Morbidity and Mortality
+
+What are the top 3 causes of morbidity (illness) and the top 3 causes of mortality (death) in the US? 
+
+**Morbidity**
+
+According to a 2013 journal article, "Why do patients visit their doctors? Assessing the most prevalent conditions in a defined US population", the top 3 reasons why patients visited their doctor were skin disorders, osteoarthritis and joint problems, and back problems. A different article, "What are the most common conditions in primary care?", lists upper respiratory tract infection, hypertension, and arthritis. 
+
+**Mortality**
+
+According to the CDC, the top 3 causes of mortality in 2023 were Heart Disease, Cancer, and Accidents (Unintentional Injuries). 
+
+In the Synthea data set, how would you estimate similar answers? 
+
+(Hint - LOINC code '69453-9' is 'Cause of Death [US Standard Certificate of Death]' and can be found in the `observations` table. Patients have encounters, which in turn have observations. This is where the cause of death is recorded. Illnesses can be found in the `conditions` table (ie, diagnosis made a different encounters))
+```{sql connection=con}
+-- find top 3 causes of morbidity
+SELECT 
+  COUNT(DISTINCT patient) AS patient_count,
+  description AS cause_morbidity
+FROM conditions
+WHERE description LIKE '%(disorder)%' -- filter for descriptions containing '(disorder)'
+GROUP BY description
+ORDER BY patient_count DESC
+LIMIT 3
+;
+```
+
+```{sql connection=con}
+-- find top 3 causes of mortality
+SELECT 
+  COUNT(DISTINCT patient) AS patient_count, 
+  value AS cause_mortality
+FROM observations
+WHERE code = '69453-9' -- filter by LOINC code for 'Cause of Death' 
+GROUP BY value
+ORDER BY patient_count DESC
+LIMIT 3
+;
+```
+# Insurance
+
+What is the breakdown of spending between Medicaid, Medicare and everything else in the US? Why do you think it might break down this way? 
+
+The Center for Medicaid and Medicare Services (CMS) National Health Expenditure (NHE) fact sheet for 2022 lists this breakdown of spending:
+
+| Insurance Type | Spending         | % of NHE | 
+|----------------|------------------|----------|
+| Medicare       |  $944.3 billion  | 21%      | 
+| Medicaid       |  $805.7 billion  | 18%      | 
+| Private        |  $1289.8 billion | 29%      | 
+
+Combined, Medicare and Medicaid make up 39% of total NHE, which is greater than that spent by private insurance.This may be due to changes in the US population, with increases in the 65+ demographic and longer expected lifespans, resulting in more people reaching Medicare-eligible age and staying on Medicare for a long time with chronic, complex illnesses. 
+
+In the Synthea data set, how would you estimate similar answers?
+
+(Hint: This will require you to look at the `encounters` table and join it against the `payers` table where you will find the names of the payers. You will likely find this easier to do for a single year, eg 2022!.)
+
+```{sql connection=con}
+--  breakdown of encounters between Medicare vs Medicaid vs Dual Eligible vs Private vs No Insurance 
+-- looking at number of encounters for each insurance type in 2022 which could act as a proxy for spending
+-- to get the breakdown of spending, would need to get the amount that was covered for each encounter 
+
+SELECT 
+  COUNT(DISTINCT encounters.id) AS encounters_count_2022,
+  -- use case statement to categorize payer types and group all private insurance together 
+  CASE WHEN payers.name 
+    NOT IN ('Medicare', 'Medicaid', 'Dual Eligible', 'NO_INSURANCE')
+      THEN 'Private Insurance' ELSE payers.name
+      END AS payer_type 
+FROM encounters
+LEFT JOIN payers
+  ON encounters.payer = payers.id
+WHERE EXTRACT(YEAR from encounters.start) = 2022 -- only encounters from 2022 
+GROUP BY payer_type
+ORDER BY encounters_count_2022 DESC
+;
+```
+
+```{sql connection=con, output.var="insurance_df"}
+--  breakdown of encounters between Medicare vs Medicaid vs Dual Eligible vs Private vs No Insurance 
+-- looking at number of encounters for each insurance type in 2022 which could act as a proxy for spending
+-- to get the breakdown of spending, would need to get the amount that was covered for each encounter 
+
+SELECT 
+  COUNT(DISTINCT encounters.id) AS encounters_count_2022,
+  -- use case statement to categorize payer types and group all private insurance together 
+  CASE WHEN payers.name 
+    NOT IN ('Medicare', 'Medicaid', 'Dual Eligible', 'NO_INSURANCE')
+      THEN 'Private Insurance' ELSE payers.name
+      END AS payer_type 
+FROM encounters
+LEFT JOIN payers
+  ON encounters.payer = payers.id
+WHERE EXTRACT(YEAR from encounters.start) = 2022 -- only encounters from 2022 
+GROUP BY payer_type
+ORDER BY encounters_count_2022 DESC
+;
+```
+
+```{r}
+# plot the number of encounters per payer_type in 2022 
+ggplot(insurance_df, aes(x = payer_type, y = encounters_count_2022)) +
+  geom_col() +
+  labs(title = "Encounters by Payer Type in 2022",
+       x = "Payer Type",
+       y = "Number of Encounters (2022)") +
+  theme_minimal()
+  
+```
+
+# Lack of Insurance
+
+What percent of Americans are estimated to be uninsured in the United States? How has this changed over the past 15 years, and why?
+
+7.9% of the US population (26 million people) is estimated to be uninsured as of 2022, according to the September 2023 Census Bureau and the Peter G. Peterson Foundation. This represents an all-time low percentage of uninsured people in the US.
+
+In the last 15 years, the uninsured rate has been declining, potentially due to the Affordable Care Act being signed into law in 2010 and taking full effect in 2014, and an increase in Medicaid enrollment during the COVID19 pandemic in 2020.
+
+In the Synthea data set, how would you estimate similar answers?
+
+(Hint - Every encounter in Synthea has a payer ID - there is actually an entry in the `payers` table for "No Insurance", rather than the payer ID being NULL in the `encounters` table. Each encounter has insurance information associated with it, but if you want to know someone's insurance status at any given time you need the 'payer_transitions' table which is a history of patient's insurance coverage.)
+
+```{sql connection=con}
+-- get number of payers without insurance for each year, for last 15 years
+-- not sure how to use the payers_transitions table ?
+SELECT 
+  EXTRACT(YEAR from encounters.start) AS year,
+  COUNT(DISTINCT patient) AS uninsured_patients
+FROM encounters
+JOIN payers ON encounters.payer = payers.id
+WHERE 
+  payers.name = 'NO_INSURANCE'
+  AND EXTRACT(YEAR from encounters.start) BETWEEN 2007 AND 2024
+GROUP BY year
+ORDER BY year DESC
+;
+```
+
+```{sql connection=con, output.var="uninsured_df"}
+-- get number of payers without insurance for each year, for last 15 years
+-- not sure how to use the payers_transitions table ?
+SELECT 
+  EXTRACT(YEAR from encounters.start) AS year,
+  COUNT(DISTINCT patient) AS uninsured_patients
+FROM encounters
+JOIN payers ON encounters.payer = payers.id
+WHERE 
+  payers.name = 'NO_INSURANCE'
+  AND EXTRACT(YEAR from encounters.start) BETWEEN 2007 AND 2024
+GROUP BY year
+ORDER BY year DESC
+;
+```
+
+```{r}
+# plot the number of uninsured patients per year
+ggplot(uninsured_df, aes(x = year, y = uninsured_patients)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Number of Uninsured Patients Per Year (2009-2023)",
+       x = "Year",
+       y = "Number of Uninsured Patients") +
+  scale_x_continuous(breaks = seq(2009, 2023, 1)) + # Set breaks for every year
+  scale_y_continuous(limits = c(1200, NA), expand = expansion(mult = c(0, 0.05))) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels
+```
+
+# Surprise Billing
+
+What is meant by "surprise billing" in the US? 
+
+According to the Consumer Financial Protection Bureau (CFPB), a surprise medical bill is an unexpected medical bill received by a patient/consumer from an out-of-network provider or at an out-of-network facility. 
+If the patient received services from a provider or at a facility that was unknowingly out-of-network, they would expect to have their services covered and would receive a "surprise" bill for those services. This could also occur if a patient was un-insured when they received services, potentially because they were unaware their coverage ended. 
+
+How would you find evidence of this in the Synthea data set? Show whether it exists or does not exist in Synthea. 
+
+(Hint - this is difficult, and you will get full points for any thoughtful attempt that runs. One way to think about it would to look for patients that appeared to have insurance the time of the encounter (`payer_transitions` table) but whose encounter was billed to `NO_INSURANCE`. Another would be to look for encounters where there was a valid payer but no-reimbursement by the payer (eg `payer_coverage` = 0), but this could also be just declined coverage!)
+
+```{sql connection=con}
+-- find patients who had insurance in payer_transitions, but have NO_INSURANCE listed for an encounter 
+-- from payers table: payer_id e03e23c9-4df1-3eb6-a62d-f70f02301496 = payer_name NO_INSURANCE
+-- not sure if joining 3 tables makes it too confusing, so just using the payer_id for NO_INSURANCE
+SELECT 
+  COUNT(DISTINCT encounters.patient) AS patients_surprise_billed,
+  EXTRACT(YEAR from encounters.start) AS year
+FROM encounters
+LEFT JOIN payer_transitions ON encounters.patient = payer_transitions.patient
+WHERE payer_transitions.payer <> 'e03e23c9-4df1-3eb6-a62d-f70f02301496' -- the patient has insurance 
+  AND encounters.payer = 'e03e23c9-4df1-3eb6-a62d-f70f02301496' -- but the encounter has NO_INSURANCE 
+GROUP BY year
+ORDER BY year DESC
+;
+```
+
+```{sql connection=con, output.var = "surpriseBilling_df"}
+-- find patients who had insurance in payer_transitions, but have NO_INSURANCE listed for an encounter 
+-- from payers table: payer_id e03e23c9-4df1-3eb6-a62d-f70f02301496 = payer_name NO_INSURANCE
+-- not sure if joining 3 tables makes it too confusing, so just using the payer_id for NO_INSURANCE
+SELECT 
+  COUNT(DISTINCT encounters.patient) AS patients_surprise_billed,
+  EXTRACT(YEAR from encounters.start) AS year
+FROM encounters
+LEFT JOIN payer_transitions ON encounters.patient = payer_transitions.patient
+WHERE payer_transitions.payer <> 'e03e23c9-4df1-3eb6-a62d-f70f02301496' -- the patient has insurance 
+  AND encounters.payer = 'e03e23c9-4df1-3eb6-a62d-f70f02301496' -- but the encounter has NO_INSURANCE 
+GROUP BY year
+ORDER BY year DESC
+;
+```
+
+```{r}
+# plot the number of surprise billed patients per year
+ggplot(surpriseBilling_df, aes(x = year, y = patients_surprise_billed)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Number of Surprise Billings Per Year (2010-2023)",
+       x = "Year",
+       y = "Number of Surprise Billed Patients") +
+  scale_x_continuous(breaks = seq(2010, 2023, 1)) + # Set breaks for every year
+  scale_y_continuous(limits = c(500, NA), expand = expansion(mult = c(0, 0.05))) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels
+```
